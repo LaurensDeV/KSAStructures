@@ -1,0 +1,288 @@
+#version 450
+
+// The office garage's daylight taken out, in the scene image before bloom. A static object takes the
+// sky's ambient whatever stands over it, and so does anything driven or walked in under it, so every
+// pixel inside the dug rooms is scaled by the share of its light that is not ambient: the engine's own
+// lamp light there, read out of its light result, over that plus the ambient its shader used. Nothing
+// is read as a surface's colour, so a car keeps the colours the engine gave it.
+//
+// The garage's own faces also get what the engine cannot give them: the light the room returns onto
+// a ceiling or the back of a pillar, and a fixture's glow. Those are known by where they are, and so
+// is what they are painted with.
+//
+// Set 2 is KSA's bindless textures, for the ambient table. Bindings follow ComputePipelineWrapper's
+// order: the storage image, the depth it samples, then the engine's two light results.
+
+#define SET_TEXTURE 2
+#define SET_CLOUD_DATA 5
+
+#include "Content/KSAStructuresCore.glsl"
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+layout (set = 1, binding = 0, Rgba16f) uniform image2D sceneColor;
+layout (set = 1, binding = 1) uniform sampler2D sceneDepth;
+layout (set = 1, binding = 2) uniform sampler2D engineIrradiance;
+layout (set = 1, binding = 3) uniform sampler2D engineSpecular;
+
+layout (push_constant) uniform PushConstants
+{
+    mat4 InvViewProj;   // clip -> camera-relative world
+    vec4 Origin;        // the building's origin, camera-relative, and the share of the ambient left
+    vec4 Up;            // the building's axes; w is the lamps' brightness, zero for off
+    vec4 East;          // w: the share of a lamp's light the rooms return onto every face
+    vec4 North;         // w: one if parts are drawn with ambient at all, as the game's settings have it
+} pc;
+
+// Everything below is the site's layout, in the building's frame: east and north extents.
+const int PitCount = 7;
+const vec4 Pits[PitCount] = vec4[PitCount](
+    vec4(-10.20, -4.20, -7.00, 7.00),
+    vec4(-4.20, 5.50, -7.00, 7.00),
+    vec4(-4.40, 5.50, 2.50, 14.00),
+    vec4(-4.40, 18.70, 11.30, 36.70),
+    vec4(0.30, 12.70, 34.00, 76.50),
+    vec4(0.30, 13.50, 76.50, 89.70),
+    vec4(13.50, 45.00, 77.30, 89.70)
+);
+
+// Where there is air: a line between a lamp and a surface that leaves these is through a wall.
+const int FreeCount = 8;
+const vec4 Free[FreeCount] = vec4[FreeCount](
+    vec4(-2.00, 16.00, 14.00, 34.00),
+    vec4(-1.50, 1.00, 2.50, 14.00),
+    vec4(-4.20, 1.00, -2.50, 2.50),
+    vec4(3.00, 10.00, 34.00, 76.50),
+    vec4(3.00, 13.50, 76.50, 87.00),
+    vec4(13.50, 45.00, 80.00, 87.00),
+    vec4(45.00, 64.70, 80.00, 87.00),
+    vec4(-7.50, -4.50, -1.50, 1.50)
+);
+
+const int PillarCount = 4;
+const vec4 Pillars[PillarCount] = vec4[PillarCount](
+    vec4(1.25, 1.75, 21.05, 21.55),
+    vec4(1.25, 1.75, 26.85, 27.35),
+    vec4(11.25, 11.75, 21.05, 21.55),
+    vec4(11.25, 11.75, 26.85, 27.35)
+);
+
+// East, north, range and intensity, as Ksa/OfficeUnderground.cs submits them.
+const int LampCount = 19;
+const vec4 Lamps[LampCount] = vec4[LampCount](
+    vec4(6.50, 38.00, 12.00, 38.00),
+    vec4(6.50, 46.00, 12.00, 38.00),
+    vec4(6.50, 54.00, 12.00, 38.00),
+    vec4(6.50, 62.00, 12.00, 38.00),
+    vec4(6.50, 70.00, 12.00, 38.00),
+    vec4(8.55, 81.45, 12.00, 38.00),
+    vec4(18.00, 83.50, 12.00, 38.00),
+    vec4(26.00, 83.50, 12.00, 38.00),
+    vec4(34.00, 83.50, 12.00, 38.00),
+    vec4(42.00, 83.50, 12.00, 38.00),
+    vec4(2.50, 17.50, 11.00, 38.00),
+    vec4(2.50, 24.00, 11.00, 38.00),
+    vec4(2.50, 30.50, 11.00, 38.00),
+    vec4(11.50, 17.50, 11.00, 38.00),
+    vec4(11.50, 24.00, 11.00, 38.00),
+    vec4(11.50, 30.50, 11.00, 38.00),
+    vec4(-0.25, 5.50, 8.00, 14.00),
+    vec4(-0.25, 11.00, 8.00, 14.00),
+    vec4(-1.60, 0.00, 7.00, 14.00)
+);
+
+const float Floor = -5.0;
+const float Ceiling = -0.36;
+const float LampHeight = -0.5;
+const float Mouth = 45.0;
+const vec3 Warm = vec3(1.0, 0.93, 0.80);
+const vec3 Luma = vec3(0.2126, 0.7152, 0.0722);
+
+vec3 WorldAt(ivec2 at, ivec2 size)
+{
+    float deviceZ = texelFetch(sceneDepth, clamp(at, ivec2(0), size - 1), 0).r;
+    vec2 uv = (vec2(at) + 0.5) / vec2(size);
+    vec4 p = pc.InvViewProj * vec4(uv * 2.0 - 1.0, deviceZ, 1.0);
+    return p.xyz / p.w;
+}
+
+bool InAir(vec2 q)
+{
+    bool inside = false;
+    for (int i = 0; i < FreeCount; i++)
+    {
+        vec4 r = Free[i];
+        inside = inside || (q.x > r.x - 0.05 && q.x < r.y + 0.05 && q.y > r.z - 0.05 && q.y < r.w + 0.05);
+    }
+    return inside;
+}
+
+bool InPillar(vec2 q)
+{
+    bool inside = false;
+    for (int i = 0; i < PillarCount; i++)
+    {
+        vec4 r = Pillars[i];
+        inside = inside || (q.x > r.x && q.x < r.y && q.y > r.z && q.y < r.w);
+    }
+    return inside;
+}
+
+float Seen(vec2 from, vec2 lamp)
+{
+    const int Steps = 8;
+    for (int i = 1; i < Steps; i++)
+    {
+        vec2 q = mix(from, lamp, float(i) / float(Steps));
+        if (!InAir(q) || InPillar(q)) return 0.0;
+    }
+    return 1.0;
+}
+
+void main()
+{
+    ivec2 size = imageSize(sceneColor);
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    if (at.x >= size.x || at.y >= size.y) return;
+
+    if (texelFetch(sceneDepth, at, 0).r <= 0.0) return;
+
+    vec3 world = WorldAt(at, size);
+    vec3 p = world - pc.Origin.xyz;
+
+    // Under the ceiling's own underside: nothing seen in the garage is above it, and the grass over
+    // the roof must not be touched.
+    float x = dot(p, pc.Up.xyz);
+    if (x > -0.25) return;
+
+    float y = dot(p, pc.East.xyz);
+    float z = dot(p, pc.North.xyz);
+
+    bool inside = false;
+    if (x < Ceiling + 0.04 && x > Floor - 1.5)
+    {
+        for (int i = 0; i < PitCount; i++)
+        {
+            vec4 r = Pits[i];
+            inside = inside || (y > r.x - 0.5 && y < r.y + 0.5 && z > r.z - 0.5 && z < r.w + 0.5);
+        }
+    }
+
+    // The deep ramp's shaft and hall, as tools/model/office-deep.py lays them out.
+    bool deepShaft = y > 24.4 && y < 55.6 && z > -60.6 && z < -29.4 && x > -55.0;
+    bool deepHall = y > 11.0 && y < 83.0 && z > -119.0 && z < -60.0 && x > -55.0 && x < -39.4;
+    bool deep = !inside && (deepShaft || deepHall);
+    if (!inside && !deep) return;
+
+    // The surface's normal off the depth, from whichever neighbour each way is nearer in depth, so an
+    // edge takes the face it belongs to.
+    vec3 l = WorldAt(at - ivec2(1, 0), size) - world, r = WorldAt(at + ivec2(1, 0), size) - world;
+    vec3 u = WorldAt(at - ivec2(0, 1), size) - world, d = WorldAt(at + ivec2(0, 1), size) - world;
+    vec3 dx = dot(l, l) < dot(r, r) ? -l : r;
+    vec3 dy = dot(u, u) < dot(d, d) ? -u : d;
+    vec3 n = normalize(cross(dx, dy));
+    if (dot(n, world) > 0.0) n = -n;
+
+    float rise = dot(n, pc.Up.xyz);
+    vec2 across = vec2(dot(n, pc.East.xyz), dot(n, pc.North.xyz));
+
+    // A face of the garage itself, by where it is.
+    bool floorFace = rise > 0.7 && abs(x - Floor) < 0.05;
+    bool ceilingFace = rise < -0.7 && x > -0.5;
+    bool wallFace = abs(rise) < 0.3 && InAir(vec2(y, z) + across * 0.12)
+                    && (!InAir(vec2(y, z) - across * 0.12) || InPillar(vec2(y, z) - across * 0.12));
+    bool shell = deep || floorFace || ceilingFace || wallFace;
+
+    vec4 was = imageLoad(sceneColor, at);
+
+    // The ambient each shader lit this pixel with. StaticObject.frag takes the sky table whole;
+    // parts, kittens and fur take it greyed, and by how far the face looks up.
+    vec3 toSun = normalize(global.lighting.sunPosition.xyz - world);
+    float bottom = global.lighting.planetRadius;
+    vec3 sky = GetAmbient(world, global.lighting.planetPosition.xyz, toSun, bottom,
+                          bottom + global.lighting.atmosphereHeight, AMBIENT_LUT_TEXTURE, GLOBAL_CLAMP_SAMPLER,
+                          float(global.lighting.atmosphereLutLayer)) * global.lighting.sunColor.rgb;
+    vec3 ambient = shell ? sky * 0.92
+                         : mix(vec3(length(sky)), sky, 0.7) * ((0.5 + 0.5 * rise) * pc.North.w);
+
+    // The engine's lamp light here, and its highlights, which are no share of the ambient.
+    float glance = 1.0 - clamp(dot(n, -normalize(world)), 0.0, 1.0);
+    float fresnel = 0.04 + 0.96 * glance * glance * glance * glance * glance;
+    vec3 lamps = texelFetch(engineIrradiance, at, 0).rgb * ((1.0 - fresnel) / 3.14159265);
+    vec3 highlights = min(was.rgb, texelFetch(engineSpecular, at, 0).rgb * fresnel);
+
+    // Sunlight comes in at the tunnel's mouth, and how far depends on the sun: a pixel whose line to
+    // the sun leaves through the open ramp keeps everything. The sky's own light falls off over the
+    // first ten metres in from the mouth.
+    vec3 sun = vec3(dot(toSun, pc.Up.xyz), dot(toSun, pc.East.xyz), dot(toSun, pc.North.xyz));
+    bool sunlit = false;
+    if (!deep && sun.x > 0.02)
+    {
+        float t = (Ceiling - x) / sun.x;
+        vec2 leaves = vec2(y, z) + sun.yz * t;
+        sunlit = leaves.x > Mouth && leaves.y > 80.0 && leaves.y < 87.0;
+    }
+
+    bool eastLeg = z > 76.5 && y > 13.5;
+    float open = eastLeg ? exp(-max(Mouth - y, 0.0) / 4.3) : 0.0;
+    float left = mix(pc.Origin.w, 1.0, open);
+
+    // The shaft is open to the sky over its first two legs, and the sky's light falls off down it.
+    if (deep) left = deepHall ? pc.Origin.w : mix(pc.Origin.w, 1.0, smoothstep(-12.0, -1.0, x));
+    float painted = floorFace ? (((y > 3.0 && y < 10.0 && z > 34.0) || (z > 76.5 && y > 3.0)) ? 0.04 : 0.12) : 0.30;
+
+    vec3 colour;
+    if (!sunlit)
+    {
+        vec3 share = 1.0 - (1.0 - left) * ambient / max(ambient + lamps, vec3(1.0e-6));
+        colour = (was.rgb - highlights) * share + highlights;
+    }
+    else if (shell)
+    {
+        // In the sun the share cannot be told, so the garage's own faces lose the ambient their paint
+        // took and the sky's sheen on it, about 0.03 of the ambient on a rough face, and the sunlight
+        // stays. Left whole, a sunlit patch is a patch of daylight ambient.
+        colour = was.rgb - min(was.rgb * 0.9, (painted + 0.03) * ambient * (1.0 - left));
+    }
+    else
+    {
+        colour = was.rgb;
+    }
+
+    float brightness = pc.Up.w;
+    if (shell && !deep && brightness > 0.0)
+    {
+        vec2 here = vec2(y, z) + across * 0.06;
+        float returned = 0.0;
+        float glow = 0.0;
+
+        for (int i = 0; i < LampCount; i++)
+        {
+            vec4 lamp = Lamps[i];
+            vec3 toLamp = vec3(LampHeight - x, lamp.x - y, lamp.y - z);
+            float d2 = dot(toLamp, toLamp);
+            float range = lamp.z * 1.25;
+            if (d2 > range * range) continue;
+
+            // The fixture, which is over the lamp's own plane and takes none of its light.
+            if (ceilingFace && x < Ceiling - 0.04 && abs(toLamp.y) < 0.62 && abs(toLamp.z) < 0.14) glow = 1.0;
+
+            if (Seen(here, lamp.xy) <= 0.0) continue;
+
+            float q = d2 / (range * range);
+            returned += lamp.w * clamp(1.0 - q * q, 0.0, 1.0) / max(d2, 1.0);
+        }
+
+        colour += Warm * (brightness * (painted * returned * pc.East.w / 3.14159265 + glow * 2.5));
+    }
+
+    // The hall's ceiling and the tops of its walls are above every lamp's plane, and take what its
+    // pale floor sends back up.
+    if (deepHall && brightness > 0.0)
+    {
+        float up = smoothstep(-48.0, -41.0, x) * (rise < -0.7 ? 1.0 : 0.6);
+        colour += Warm * (brightness * 0.33 * 0.5 * up / 3.14159265);
+    }
+
+    imageStore(sceneColor, at, vec4(colour, was.a));
+}

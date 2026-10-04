@@ -1,0 +1,95 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>KSAStructures</RootNamespace>
+    <!-- StarMap loads "<EntryAssembly>.dll" from mod.toml, so this name must match it. -->
+    <AssemblyName>KSAStructures</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Stamped into the assembly and used to name the release archive. -->
+    <Version>0.0.0</Version>
+
+    <Product>KSA Structures</Product>
+  </PropertyGroup>
+
+  <!--
+    Release ships no debug information at all: a mod is a single file dropped into someone's game
+    folder, and a stack trace with line numbers is worth nothing to them without the source.
+    Debug keeps everything, and Log defaults to its Debug threshold there - see Ksa/Log.cs.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Optimize>true</Optimize>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="mod.toml">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <!-- Part and asset definitions, listed one by one in mod.toml's assets array. -->
+    <None Update="KSAStructures*.xml">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Meshes\**\*.glb">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Textures\**\*.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <!-- GLSL, compiled by KSA at load from wherever the mod is installed. -->
+    <None Update="Shaders\**\*.comp">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!--
+    Game and loader assemblies are compile-time only. They are already loaded in the KSA process,
+    so Private=false keeps them out of the mod output - a second copy would load into a different
+    AssemblyLoadContext and the type identities would not match the running game's.
+
+    $(KsaDllDir) is resolved by Directory.Build.props at the repository root.
+  -->
+  <ItemGroup>
+    <Reference Include="$(KsaDllDir)KSA.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)StarMap.API.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.Core.Numerics.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.Core.Common.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.Core.Strings.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.ImGui.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.ImGui.Abstractions.dll" Private="false" />
+    <!-- KeyHash, which keeps the KSA namespace but is defined in this assembly. -->
+    <Reference Include="$(KsaDllDir)Planet.Render.Core.dll" Private="false" />
+    <!-- The compute pass in Ksa/DarkPass.cs records into KSA's own command buffer. -->
+    <Reference Include="$(KsaDllDir)Brutal.Vulkan.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.Vulkan.Abstractions.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.ShaderC.dll" Private="false" />
+    <!-- Needed to compile against Vehicle's mass-properties signatures (Symmetric3x3). -->
+    <Reference Include="$(KsaDllDir)BepuUtilities.dll" Private="false" />
+    <Reference Include="$(KsaDllDir)Brutal.Glfw.dll" Private="false" />
+    <!-- Harmony ships with StarMap, so patching the engine asks a player to install nothing. -->
+    <Reference Include="$(KsaDllDir)0Harmony.dll" Private="false" />
+  </ItemGroup>
+
+  <!--
+    The KSA build this was compiled against, taken from ksa-assemblies.lock rather than written
+    down a second time. The log compares it to the build actually running.
+  -->
+  <PropertyGroup>
+    <KsaLockPath>$(MSBuildThisFileDirectory)../../ksa-assemblies.lock</KsaLockPath>
+    <KsaBuildLine Condition="Exists('$(KsaLockPath)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(KsaLockPath)')), 'build[ \t]+[0-9][^\r\n]*').Value)</KsaBuildLine>
+    <KsaBuild Condition="'$(KsaBuildLine)' != ''">$(KsaBuildLine.Substring(6).Trim())</KsaBuild>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(KsaBuild)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>KsaBuild</_Parameter1>
+      <_Parameter2>$(KsaBuild)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,18 @@
+# KSA assemblies this repository is known to build against.
+# Regenerate with ./tools/check-assemblies.sh <dir> --update after a KSA update,
+# and refresh the private ksa-game-assemblies repo to match - see CLAUDE.md.
+build 2026.10.7.5541
+fd77b88724f4104440df0cf979a851d35eec75ea3a7e86297d04abe47c71aff6  0Harmony.dll
+e0a1528ded4ef8efcb8002b99704cb8614b7db840d2cb39b5e45eda52d63bc68  BepuUtilities.dll
+4a375812c157d1af7e03b7c97df04ae8cf43d02a152a76643cccdb7d0e9b8392  Brutal.Core.Common.dll
+0c89f10fb1509315f34ff06d4b9d9a62da469eef0256b54edca9493733d536a9  Brutal.Core.Numerics.dll
+58008bda9dad98c03ea0b7d6871cf44172afb04c1db4e8ee040d4cf167a9cc74  Brutal.Core.Strings.dll
+f62c16418301b1853e549a0a2e91bfa2e6af7838e58d895efe3b50a36a52e071  Brutal.Glfw.dll
+9040dc5d410043c53dbea10d94995b6712240be37f9251b016f6cff66a76339f  Brutal.ImGui.dll
+208971fed7fdde6ce54b1a5a8b1429ba31584ea144515b29765184a8042fbb60  Brutal.ImGui.Abstractions.dll
+6e0c15530c1b9b7d032183e785e7ca20f425c0a2438cfd715de884e9048fb8d5  Brutal.ShaderC.dll
+b413f5a5f40aa847285533422d910bee843448f2e36253df5b351a2af5c38b7b  Brutal.Vulkan.dll
+911ec295d0a8632c00014ca516481e331e6732bdf0703b6f42be2e5ab4edd432  Brutal.Vulkan.Abstractions.dll
+5e47d0374d82a409a08b8f134e57b38af7f64e19d2ea9b54a17cadfce90305df  KSA.dll
+d45cbac3eac00b614a36654c43557328c5bb9b4ffc4bec1df9ad76f12b7be5e8  Planet.Render.Core.dll
+8647ce8789bdb60ccd28f971c398241014ba3afaa7a5c31f3f61e79127bce982  StarMap.API.dll

@@ -1,0 +1,135 @@
+name: CI
+
+# Why this looks the way it does
+# ------------------------------
+# Building this mod needs KSA's own assemblies (KSA.dll, Brutal.Core.Numerics.dll and friends).
+# They are not redistributable, so Import/ is gitignored and a GitHub-hosted runner has no way
+# to obtain them. The C# tests need them too - they reference Brutal.Core.Numerics for double3.
+#
+# They are kept in the private repository LaurensDeV/ksa-game-assemblies and checked out here
+# with a read-only deploy key (the KSA_ASSEMBLIES_KEY secret). Keeping your own licensed copy
+# privately is fine; publishing it is not, which is why it is not in this repository.
+#
+# Without that secret - a fork, say - the build job is skipped and the tooling job still runs,
+# so CI stays meaningful rather than failing on something a contributor cannot fix.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  commits:
+    name: Commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Conventional Commits
+        # The same script the local commit-msg hook runs, so CI and the hook cannot disagree
+        # about what is legal. A message semantic-release cannot parse produces no release and
+        # never reaches the changelog, and does so silently — hence checking it here too.
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event.before }}" =~ ^0+$ || -z "${{ github.event.before }}" ]]; then
+            # New branch, or a manual run: there is no meaningful "before", so check the tip.
+            range="${{ github.sha }}~1..${{ github.sha }}"
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          echo "checking $range"
+          ./tools/check-commit-msg.sh --range "$range"
+
+  tooling:
+    name: Tooling and assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      # One script, two callers -- the same discipline check-commit-msg.sh uses. Everything the
+      # tooling job checks lives in tools/check-all.sh, so a contributor's pre-push hook and this
+      # job cannot disagree about what "the checks" are. The assemblies are absent here, so the
+      # build half is skipped with a notice and covered by the build job below.
+      - name: Everything that does not need the game
+        run: ./tools/check-all.sh
+
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    # secrets.* cannot be used directly in a job-level if:, so surface it through env first.
+    env:
+      HAVE_KEY: ${{ secrets.KSA_ASSEMBLIES_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the KSA assemblies
+        if: env.HAVE_KEY == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: LaurensDeV/ksa-game-assemblies
+          path: .ksa-assemblies
+          ssh-key: ${{ secrets.KSA_ASSEMBLIES_KEY }}
+          persist-credentials: false
+
+      - name: Skip notice
+        if: env.HAVE_KEY != 'true'
+        run: |
+          echo "::notice::KSA_ASSEMBLIES_KEY is not set, so the mod cannot be compiled here."
+          echo "The tooling job still ran. See CLAUDE.md for why the assemblies are not public."
+
+      - name: Assemblies match the lock
+        # Guards against CI compiling against a different KSA build from the developer who
+        # wrote the code. ksa-assemblies.lock records the expected digests; a KSA update that
+        # refreshed one side and not the other fails here instead of silently.
+        if: env.HAVE_KEY == 'true'
+        run: ./tools/check-assemblies.sh .ksa-assemblies/current/dll
+
+      - uses: actions/setup-dotnet@v4
+        if: env.HAVE_KEY == 'true'
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build
+        if: env.HAVE_KEY == 'true'
+        env:
+          KSA_DLL_DIR: ${{ github.workspace }}/.ksa-assemblies/current/dll
+        run: dotnet build src/KSAStructures/KSAStructures.csproj -c Release --nologo
+
+      - name: Test
+        if: env.HAVE_KEY == 'true'
+        env:
+          KSA_DLL_DIR: ${{ github.workspace }}/.ksa-assemblies/current/dll
+        # Through the script, so the configuration cannot differ from what a push is gated on.
+        run: ./tools/test.sh
+
+      - name: Validate parts
+        if: env.HAVE_KEY == 'true'
+        run: ./tools/validate-parts.py --offline
+
+      - name: Package
+        if: env.HAVE_KEY == 'true'
+        env:
+          KSA_DLL_DIR: ${{ github.workspace }}/.ksa-assemblies/current/dll
+        run: ./tools/package.sh
+
+      - uses: actions/upload-artifact@v4
+        if: env.HAVE_KEY == 'true'
+        with:
+          name: KSAStructures-mod
+          path: dist/*.zip
+          if-no-files-found: error

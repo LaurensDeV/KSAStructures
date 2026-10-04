@@ -1,0 +1,12 @@
+# KSA reads this as a content mod, StarMap reads it as a code mod. One folder does both.
+
+name = "KSAStructures"
+
+# Asset definitions, listed one by one rather than globbed: a file left out of this list is never
+# loaded, and nothing reports it. They sit at the mod root beside Meshes/, Textures/ and Shaders/,
+# so their relative paths resolve the same whether read against the mod root or the XML's own
+# directory.
+assets = ["KSAStructuresOffice.xml"]
+
+[StarMap]
+EntryAssembly = "KSAStructures"

@@ -1,0 +1,37 @@
+# Shared editor settings, so a contributor's IDE does not reformat files it did not come to change.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.cs]
+indent_size = 4
+max_line_length = 100
+
+# Match the surrounding code rather than the default C# templates.
+csharp_new_line_before_open_brace = all
+csharp_style_namespace_declarations = file_scoped:suggestion
+csharp_style_var_for_built_in_types = false:suggestion
+dotnet_sort_system_directives_first = true
+
+# One namespace for the whole mod, so Sim/ and Ksa/ are a folder split rather than a namespace
+# one. That is what keeps the test project free of imports: KSAStructures.Tests resolves everything by
+# walking up to KSAStructures, and a namespace per folder would put a using in all 56 test files.
+# Without this line every file carries an IDE0130 suggesting the opposite -- 194 of them.
+dotnet_style_namespace_match_folder = false
+
+[*.{sh,py}]
+indent_size = 4
+
+[*.{yml,yaml,json,toml}]
+indent_size = 2
+
+[*.{xml,csproj,props}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

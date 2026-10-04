@@ -1,0 +1,31 @@
+# Game assemblies. Copied from the KSA install by tools/sync-import.sh; not redistributable.
+Import/
+
+# Build output
+bin/
+obj/
+*.user
+
+# Editors
+.vs/
+.idea/
+.vscode/
+screenshots/
+
+# Per-machine Claude Code permissions. The skills under .claude/skills/ are shared and tracked;
+# this one is local state and differs per checkout.
+.claude/settings.local.json
+
+# Release archives
+dist/
+
+# Python bytecode, from tools/ and CI
+__pycache__/
+*.pyc
+
+# StarMap writes this beside whatever directory it was launched from; it belongs to the
+# loader install, not here. setup-starmap.sh skips it for the same reason.
+StarMapConfig.json
+
+# Scratch checkouts for parallel agents. Real git worktrees, not content.
+.claude/worktrees/
